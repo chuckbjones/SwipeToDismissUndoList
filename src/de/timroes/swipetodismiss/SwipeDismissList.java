@@ -15,6 +15,7 @@
  */
 package de.timroes.swipetodismiss;
 
+import android.annotation.TargetApi;
 import android.content.Context;
 import android.graphics.Rect;
 import android.os.Build;
@@ -84,6 +85,9 @@ public final class SwipeDismissList implements View.OnTouchListener {
 	private Handler mHandler;
 
 	private PopupWindow mUndoPopup;
+	private int mPopupXOffset = 0;
+	private int mPopupYOffset = 15;
+	private int mPopupGravity = Gravity.CENTER_HORIZONTAL | Gravity.BOTTOM;
 	private TextView mUndoText;
 	private Button mUndoButton;
 
@@ -308,6 +312,36 @@ public final class SwipeDismissList implements View.OnTouchListener {
 	}
 
 	/**
+	 * Sets the offset, in dips, of the x position of
+	 * the undo popup.
+	 * 
+	 * @param popupXOffset x position in dips.
+	 */
+	public void setPopupXOffset(int popupXOffset) {
+		mPopupXOffset = popupXOffset;
+	}
+
+	/**
+	 * Sets the offset, in dips, of the y position of
+	 * the undo popup.
+	 * 
+	 * @param popupYOffset y position in dips.
+	 */
+	public void setPopupYOffset(int popupYOffset) {
+		mPopupYOffset = popupYOffset;
+	}
+
+	/**
+	 * Sets the Gravity controlling the placement of
+	 * the undo popup.
+	 * 
+	 * @param popupGravity the gravity which controls the placement of the popup window
+	 */
+	public void setPopupGravity(int popupGravity) {
+		mPopupGravity = popupGravity;
+	}
+
+	/**
 	 * Sets the directions in which a list item can be swiped to delete.
 	 * By default this is set to {@link SwipeDirection#BOTH} so that an item
 	 * can be swiped into both directions.
@@ -525,6 +559,7 @@ public final class SwipeDismissList implements View.OnTouchListener {
 	 * @param deltaX The delta of x coordinate of the swipe.
 	 * @return Whether the delta of a swipe is in the right direction.
 	 */
+	@TargetApi(Build.VERSION_CODES.JELLY_BEAN_MR1)
 	private boolean isDirectionValid(float deltaX) {
 
 		int rtlSign = 1;
@@ -602,8 +637,9 @@ public final class SwipeDismissList implements View.OnTouchListener {
 
 						// Show undo popup
 						mUndoPopup.showAtLocation(mListView, 
-							Gravity.CENTER_HORIZONTAL | Gravity.BOTTOM,
-							0, (int)(mDensity * 15));
+							mPopupGravity,
+							(int)(mDensity * mPopupXOffset), 
+							(int)(mDensity * mPopupYOffset));
 					}
 
 					ViewGroup.LayoutParams lp;
