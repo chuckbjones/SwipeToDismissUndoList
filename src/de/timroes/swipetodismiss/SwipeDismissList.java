@@ -21,6 +21,7 @@ import android.graphics.Rect;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Message;
+import android.support.v4.view.MotionEventCompat;
 import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.MotionEvent;
@@ -37,6 +38,7 @@ import com.nineoldandroids.animation.Animator;
 import com.nineoldandroids.animation.AnimatorListenerAdapter;
 import com.nineoldandroids.animation.ValueAnimator;
 
+import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -52,7 +54,7 @@ import static com.nineoldandroids.view.ViewPropertyAnimator.animate;
  * {@link ListView} dismissable. {@link ListView} is given special treatment
  * because by default it handles touches for its list items... i.e. it's in
  * charge of drawing the pressed state (the list selector), handling list item
- * clicks, etc. 
+ * clicks, etc.  
  * 
  * Read the README file for a detailed explanation on how to use this class.
  */
@@ -73,11 +75,14 @@ public final class SwipeDismissList implements View.OnTouchListener {
 	private SortedSet<PendingDismissData> mPendingDismisses = new TreeSet<PendingDismissData>();
 	private int mDismissAnimationRefCount = 0;
 	private float mDownX;
+	private float mDownY;
 	private boolean mSwiping;
 	private VelocityTracker mVelocityTracker;
 	private int mDownPosition;
 	private View mDownView;
+	private int mSwipeLayout;
 	private boolean mPaused;
+	private boolean mEnabled;
 	private float mDensity;
 
 	private UndoMode mMode;
@@ -233,7 +238,7 @@ public final class SwipeDismissList implements View.OnTouchListener {
 			throw new IllegalArgumentException("listview must not be null.");
 		}
 
-		mHandler = new HideUndoPopupHandler();
+		mHandler = new HideUndoPopupHandler(this);
 		mListView = listView;
 		mCallback = callback;
 		mMode = mode;
@@ -279,6 +284,7 @@ public final class SwipeDismissList implements View.OnTouchListener {
 
 		listView.setOnTouchListener(this);
 		listView.setOnScrollListener(this.makeScrollListener());
+		mEnabled = true;
 
 		switch(mode) {
 			case SINGLE_UNDO:
@@ -298,7 +304,7 @@ public final class SwipeDismissList implements View.OnTouchListener {
 	 * @param enabled Whether or not to watch for gestures.
 	 */
 	public void setEnabled(boolean enabled) {
-		mPaused = !enabled;
+		mEnabled = enabled;
 	}
 
 	/**
@@ -309,6 +315,10 @@ public final class SwipeDismissList implements View.OnTouchListener {
 	 */
 	public void setAutoHideDelay(int delay) {
 		mAutoHideDelay = delay;
+	}
+	
+	public void setSwipeLayout(int swipeLayout) {
+		mSwipeLayout = swipeLayout;
 	}
 
 	/**
@@ -402,7 +412,7 @@ public final class SwipeDismissList implements View.OnTouchListener {
 		return new AbsListView.OnScrollListener() {
 			@Override
 			public void onScrollStateChanged(AbsListView absListView, int scrollState) {
-				setEnabled(scrollState != AbsListView.OnScrollListener.SCROLL_STATE_TOUCH_SCROLL);
+				mPaused = !(scrollState != AbsListView.OnScrollListener.SCROLL_STATE_TOUCH_SCROLL);
 			}
 
 			@Override
@@ -417,12 +427,13 @@ public final class SwipeDismissList implements View.OnTouchListener {
 			mViewWidth = mListView.getWidth();
 		}
 
-		switch (motionEvent.getActionMasked()) {
+		switch (MotionEventCompat.getActionMasked(motionEvent)) {
 			case MotionEvent.ACTION_DOWN: {
-				if (mPaused) {
+				if (mPaused || !mEnabled) {
 					return false;
 				}
-
+				resetSwipeState();
+				
 				// TODO: ensure this is a finger, and set a flag
 
 				// Find the child view that was touched (perform a hit test)
@@ -437,6 +448,13 @@ public final class SwipeDismissList implements View.OnTouchListener {
 					child = mListView.getChildAt(i);
 					child.getHitRect(rect);
 					if (rect.contains(x, y)) {
+						if (mSwipeLayout != 0) {
+							View swipeView = child.findViewById(mSwipeLayout);
+							if (swipeView != null) {
+								mDownView = swipeView;
+								break;
+							}
+						}
 						mDownView = child;
 						break;
 					}
@@ -444,6 +462,7 @@ public final class SwipeDismissList implements View.OnTouchListener {
 
 				if (mDownView != null) {
 					mDownX = motionEvent.getRawX();
+					mDownY = motionEvent.getRawY();
 					mDownPosition = mListView.getPositionForView(mDownView);
 
 					mVelocityTracker = VelocityTracker.obtain();
@@ -479,6 +498,7 @@ public final class SwipeDismissList implements View.OnTouchListener {
 					final View downView = mDownView; // mDownView gets null'd before animation ends
 					final int downPosition = mDownPosition;
 					++mDismissAnimationRefCount;
+					mPaused = true;
 					animate(mDownView)
 						.translationX(dismissRight ? mViewWidth : -mViewWidth)
 						.alpha(0)
@@ -497,11 +517,7 @@ public final class SwipeDismissList implements View.OnTouchListener {
 						.setDuration(mAnimationTime)
 						.setListener(null);
 				}
-				mVelocityTracker = null;
-				mDownX = 0;
-				mDownView = null;
-				mDownPosition = ListView.INVALID_POSITION;
-				mSwiping = false;
+				resetSwipeState();
 				break;
 			}
 
@@ -513,24 +529,26 @@ public final class SwipeDismissList implements View.OnTouchListener {
 						mAutoHideDelay);
 				}
 				
-				if (mVelocityTracker == null || mPaused) {
+				if (mVelocityTracker == null || mPaused || !mEnabled) {
 					break;
 				}
 
 				mVelocityTracker.addMovement(motionEvent);
 				float deltaX = motionEvent.getRawX() - mDownX;
+				float deltaY = motionEvent.getRawY() - mDownY;
 				// Only start swipe in correct direction
 				if(isDirectionValid(deltaX)) {
-					if (Math.abs(deltaX) > mSlop) {
+					if (Math.abs(deltaX) > mSlop && Math.abs(deltaX) > Math.abs(deltaY)) {
 						mSwiping = true;
 						mListView.requestDisallowInterceptTouchEvent(true);
 
 						// Cancel ListView's touch (un-highlighting the item)
 						MotionEvent cancelEvent = MotionEvent.obtain(motionEvent);
 						cancelEvent.setAction(MotionEvent.ACTION_CANCEL
-							| (motionEvent.getActionIndex()
+							| (MotionEventCompat.getActionIndex(motionEvent)
 							<< MotionEvent.ACTION_POINTER_INDEX_SHIFT));
 						mListView.onTouchEvent(cancelEvent);
+						cancelEvent.recycle();
 					}
 				} else {
 					// If we swiped into wrong direction, act like this was the new
@@ -549,6 +567,18 @@ public final class SwipeDismissList implements View.OnTouchListener {
 			}
 		}
 		return false;
+	}
+
+	private void resetSwipeState() {
+		if (mVelocityTracker != null) {
+			mVelocityTracker.recycle();
+		}
+		mVelocityTracker = null;
+		mDownX = 0;
+		mDownY = 0;
+		mDownView = null;
+		mDownPosition = ListView.INVALID_POSITION;
+		mSwiping = false;
 	}
 
 	/**
@@ -654,6 +684,7 @@ public final class SwipeDismissList implements View.OnTouchListener {
 
 					mPendingDismisses.clear();
 				}
+				mPaused = false;
 			}
 		});
 
@@ -742,17 +773,24 @@ public final class SwipeDismissList implements View.OnTouchListener {
 	/**
 	 * Handler used to hide the undo popup after a special delay.
 	 */
-	private class HideUndoPopupHandler extends Handler {
-
+	private static class HideUndoPopupHandler extends Handler {
+		private final WeakReference<SwipeDismissList> parentRef;
+		
+		public HideUndoPopupHandler(SwipeDismissList parent) {
+			this.parentRef = new WeakReference<SwipeDismissList>(parent);
+		}
+		
 		@Override
 		public void handleMessage(Message msg) {
-			if(msg.what == mDelayedMsgId) {
+			SwipeDismissList parent = parentRef.get();
+			
+			if(parent != null && msg.what == parent.mDelayedMsgId) {
 				// Call discard on any element
-				for(Undoable undo : mUndoActions) {
+				for(Undoable undo : parent.mUndoActions) {
 					undo.discard();
 				}
-				mUndoActions.clear();
-				mUndoPopup.dismiss();
+				parent.mUndoActions.clear();
+				parent.mUndoPopup.dismiss();
 			}
 		}
 		
